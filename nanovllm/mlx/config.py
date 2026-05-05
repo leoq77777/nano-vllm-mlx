@@ -123,3 +123,15 @@ class MLXConfig:
         from nanovllm.mlx.sequence import Sequence
 
         Sequence.block_size = self.kvcache_block_size
+
+
+def apply_qwen_mlx_arch_to_mlx_config(mlx_cfg: MLXConfig, arch: dict) -> None:
+    """Fill KV geometry fields on ``MLXConfig`` from a Qwen3 ``config.json`` (MLX or HF-style)."""
+    from nanovllm.mlx.models.qwen3 import Qwen3MLXModelArgs
+
+    args = Qwen3MLXModelArgs.from_dict(arch)
+    mlx_cfg.num_hidden_layers = args.num_hidden_layers
+    mlx_cfg.num_kv_heads = args.num_key_value_heads
+    mlx_cfg.head_dim = args.head_dim
+    if getattr(args, "max_position_embeddings", None):
+        mlx_cfg.max_model_len = min(mlx_cfg.max_model_len, int(args.max_position_embeddings))

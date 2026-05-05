@@ -10,6 +10,7 @@ from nanovllm.mlx.loader import MLXModelLoader
 class MLXEngine:
     def __init__(self, model: str, **kwargs):
         self.config = MLXConfig(model=model, **{k: v for k, v in kwargs.items() if k in MLXConfig.__slots__})
+        self.config.apply_sequence_block_size()
         self.progress = self.config.progress or os.getenv("NANO_VLLM_PROGRESS", "0") == "1"
         if self.config.tensor_parallel_size != 1:
             raise ValueError("MLX runtime only supports tensor_parallel_size=1.")

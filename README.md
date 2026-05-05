@@ -10,6 +10,10 @@
 
 A lightweight vLLM implementation built from scratch.
 
+> **MLX / Mac（本仓库扩展）**  
+> 在 Apple Silicon 上用 **MLX** 做推理时，请先看 [docs/mac-mlx-runtime.md](docs/mac-mlx-runtime.md) 与 [docs/README.md](docs/README.md) 里的文档索引。  
+> 下方 **Installation / Quick Start / Benchmark** 描述的是上游 **CUDA + PyTorch** 路径，与 MLX 依赖和 API 不同，仅作对照与同源代码说明。
+
 ## Key Features
 
 * 🚀 **Fast offline inference** - Comparable inference speeds to vLLM

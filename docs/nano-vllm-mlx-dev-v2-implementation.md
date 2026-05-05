@@ -12,7 +12,7 @@
 - Continuous batching、chunked prefill、decode 调度与采样闭环。
 - 可验证、可 benchmark、可回退的 Phase7 优化实验。
 
-说明：GitNexus 已索引独立项目 `nano-vllm-mlx`，索引路径为 `/Users/leo/code/nano-vllm-mlx`，远程为 `https://github.com/leoq77777/nano-vllm-mlx`。当前 GitNexus 索引停在提交 `fb926b0`（基础 MLX runtime 版本），而本文覆盖的 Dev V2 实现包含后续本地提交 `f2d5d08`、`5f0439f`、`cffdd43` 以及未提交的 Phase7 实验改动。因此本文会同时引用 GitNexus 对旧版 MLX 入口链路的结构分析，并以当前代码为准描述 Dev V2 的新增能力。
+说明：GitNexus 已索引独立项目 `nano-vllm-mlx`，索引路径为 `/Users/leo/code/nano-vllm-mlx`，远程为 `https://github.com/leoq77777/nano-vllm-mlx`。最初索引停在 `fb926b0`（基础 MLX runtime 版本）；在提交 Dev V2 后已重新运行 `gitnexus analyze .`，当前索引更新到 `a29f0b3`，规模为 55 个文件、1058 个节点、1763 条边、43 条 flows。本文结合 GitNexus 的入口关系视角、当前 Git 提交记录、`dev_v2_prompt.md` 和本地代码实现总结 Dev V2。
 
 ## 实现概览
 
@@ -40,14 +40,20 @@ nanovllm/mlx/
 
 ## GitNexus 索引视角
 
-GitNexus 当前索引的 `nano-vllm-mlx` 版本是 `fb926b0`，对应 Dev V2 之前的基础 MLX wrapper 形态。该索引结果对项目演进很有帮助：
+GitNexus 重新分析后，`nano-vllm-mlx` 已覆盖 Dev V2 最新提交：
 
-- `MLXEngine` 位于 `nanovllm/mlx/engine.py`，在索引版本中包含 `__init__`、`_configure_metal`、`generate_one`、`generate` 方法。
-- `MLXLLM` 位于 `nanovllm/mlx/llm.py`，继承自 `MLXEngine`，是外部用户调用 MLX 路径的主要入口。
-- GitNexus 显示 `MLXLLM` 被 `scripts/smoke_test_mlx.py`、`scripts/bench_mlx.py`、`nanovllm/__init__.py`、`nanovllm/mlx/__init__.py` 引用，说明基础版本的公开接口集中在 `MLXLLM`。
-- GitNexus 对 `MLXEngine` / `MLXLLM` 未识别到复杂 execution process，符合当时实现：`MLXEngine` 主要是对 `mlx_lm.generate()` 的轻量封装，没有自有 scheduler / model runner / paged attention 执行链。
+- 项目路径：`/Users/leo/code/nano-vllm-mlx`
+- 远程：`https://github.com/leoq77777/nano-vllm-mlx`
+- 当前索引提交：`a29f0b3`
+- 索引规模：55 个文件、1058 个节点、1763 条边、34 个 clusters、43 条 flows
 
-因此，Dev V2 的核心变化可以概括为：保留 GitNexus 识别出的 `MLXLLM -> MLXEngine` 入口形态，但把 `MLXEngine` 内部从 `mlx_lm.generate()` wrapper 升级为自有 continuous batching 推理引擎。
+GitNexus 的符号视角仍清楚展示了公开入口关系：
+
+- `MLXLLM` 位于 `nanovllm/mlx/llm.py`，继承自 `MLXEngine`，是用户调用 MLX 路径的主要入口。
+- `MLXLLM` 被 `scripts/smoke_test_mlx.py`、`scripts/bench_mlx.py`、`nanovllm/__init__.py`、`nanovllm/mlx/__init__.py` 引用，说明 CLI 验证脚本、benchmark 脚本和包入口都围绕这个公开接口组织。
+- Dev V2 保留 `MLXLLM -> MLXEngine` 的入口形态，但将 `MLXEngine` 内部从 `mlx_lm.generate()` wrapper 升级为自有 scheduler / model runner / paged attention 执行链。
+
+因此，GitNexus 视角下本项目的演进可以概括为：外部 API 保持稳定，内部执行链路从“库封装”扩展为“自有 continuous batching 推理引擎”。
 
 ## Phase 1：数据层
 

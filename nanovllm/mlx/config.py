@@ -74,6 +74,10 @@ class MLXConfig:
     legacy_mlx_lm: bool = False
     """Reserved: ``mx.compile`` on decode blocks needs array-only args (no runner context object yet)."""
     mlx_compile_decode: bool = False
+    """If ``True``, use batch gather + single batched SDPA for decode (Phase 7 Route B)."""
+    decode_batch_gather: bool = False
+    """Enable batch gather only when ``batch_size * max_context_len`` exceeds this threshold."""
+    decode_batch_gather_min_work: int = 512
 
     # Scheduling / length limits (aligned with CUDA engine knobs)
     max_num_batched_tokens: int = 8192

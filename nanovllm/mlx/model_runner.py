@@ -9,7 +9,9 @@ import mlx.core as mx
 from nanovllm.mlx.config import MLXConfig
 from nanovllm.mlx.context import MLXRunnerContext, reset_mlx_runner_context, set_mlx_runner_context
 from nanovllm.mlx.layers.attention import (
+    build_decode_slot_matrix,
     block_table_prefix_slots,
+    gather_kv_from_slot_matrix,
     gather_kv_from_slots,
     scatter_kv_tokens,
     scatter_kv_tokens_batched,
@@ -61,6 +63,9 @@ class MLXModelRunner:
             self.v_caches.append(v)
         self._scale = float(self.args.head_dim) ** -0.5
         self._slot_buf = mx.zeros((self.config.max_num_batched_tokens,), dtype=mx.int32)
+        self._decode_batch_gather = bool(getattr(config, "decode_batch_gather", True))
+        self._max_decode_ctx = int(self.config.max_model_len)
+        self._decode_batch_gather_min_work = int(getattr(config, "decode_batch_gather_min_work", 512))
         # ``mlx_compile_decode``: MLX ``mx.compile`` currently requires array-only args; runner
         # context is a Python dataclass — compile is deferred until we pack ctx into flat buffers.
 
@@ -162,6 +167,45 @@ class MLXModelRunner:
         )
         return ids, pos, ctx
 
+    def _decode_batched_attention(
+        self,
+        q: mx.array,
+        k_buf: mx.array,
+        v_buf: mx.array,
+        ctx: MLXRunnerContext,
+    ) -> mx.array:
+        """
+        Decode attention with batch slot gather (Phase 7 Route B).
+
+        ``q``: (1, n_heads, B, d) -> returns ``o`` with same layout.
+        """
+        b = int(ctx.context_lens.shape[0]) if ctx.context_lens is not None else 0
+        if b == 0:
+            return q * 0
+        max_ctx = min(int(mx.max(ctx.context_lens).item()), self._max_decode_ctx)
+        slots, valid = build_decode_slot_matrix(
+            ctx.block_tables,
+            ctx.context_lens,
+            self.block_size,
+            max_ctx_len=max_ctx,
+        )
+        kg, vg = gather_kv_from_slot_matrix(k_buf, v_buf, slots, valid)  # (B, L, nkv, d)
+        q_b = q.transpose(2, 1, 0, 3)  # (B, n_heads, 1, d)
+        kg = kg.transpose(0, 2, 1, 3)  # (B, n_kv, L, d)
+        vg = vg.transpose(0, 2, 1, 3)
+        mask = valid[:, None, None, :]  # (B,1,1,L)
+        out_b = mx.fast.scaled_dot_product_attention(q_b, kg, vg, scale=self._scale, mask=mask)
+        return out_b.transpose(2, 1, 0, 3)  # (1, n_heads, B, d)
+
+    def _should_use_decode_batch_gather(self, ctx: MLXRunnerContext) -> bool:
+        if not self._decode_batch_gather or ctx.context_lens is None:
+            return False
+        b = int(ctx.context_lens.shape[0])
+        if b <= 1:
+            return False
+        max_ctx = int(mx.max(ctx.context_lens).item())
+        return b * max_ctx >= self._decode_batch_gather_min_work
+
     def _gather_kv_concat(self, layer_idx: int, ctx: MLXRunnerContext, total_k: int) -> tuple[mx.array, mx.array]:
         """Stack keys/values in concat-key order (length ``total_k``)."""
         k_buf = self.k_caches[layer_idx]
@@ -229,16 +273,19 @@ class MLXModelRunner:
         self.k_caches[layer_idx], self.v_caches[layer_idx] = nk, nv
         k_buf, v_buf = self.k_caches[layer_idx], self.v_caches[layer_idx]
 
-        o = mx.zeros((1, nh, b, dh), dtype=h.dtype)
-        for bi, seq in enumerate(ctx.seqs):
-            L = len(seq)
-            slots = block_table_prefix_slots(seq.block_table, self.block_size, 0, L)
-            kg, vg = gather_kv_from_slots(k_buf, v_buf, slots)
-            kg = kg.transpose(1, 0, 2)[None, :, :, :]
-            vg = vg.transpose(1, 0, 2)[None, :, :, :]
-            qb = q[:, :, bi : bi + 1, :]
-            seg = mx.fast.scaled_dot_product_attention(qb, kg, vg, scale=self._scale, mask=None)
-            o[:, :, bi : bi + 1, :] = seg
+        if self._should_use_decode_batch_gather(ctx):
+            o = self._decode_batched_attention(q, k_buf, v_buf, ctx)
+        else:
+            o = mx.zeros((1, nh, b, dh), dtype=h.dtype)
+            for bi, seq in enumerate(ctx.seqs):
+                L = len(seq)
+                slots = block_table_prefix_slots(seq.block_table, self.block_size, 0, L)
+                kg, vg = gather_kv_from_slots(k_buf, v_buf, slots)
+                kg = kg.transpose(1, 0, 2)[None, :, :, :]
+                vg = vg.transpose(1, 0, 2)[None, :, :, :]
+                qb = q[:, :, bi : bi + 1, :]
+                seg = mx.fast.scaled_dot_product_attention(qb, kg, vg, scale=self._scale, mask=None)
+                o[:, :, bi : bi + 1, :] = seg
         out = o.transpose(0, 2, 1, 3).reshape(1, b, nh * dh)
         out = attn.output_proj(out)
         h = h + out

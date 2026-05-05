@@ -69,6 +69,11 @@ class MLXConfig:
     cache_limit_gb: int = 20
     tensor_parallel_size: int = 1
     progress: bool = False
+    eos: int = -1
+    """If ``True``, ``MLXEngine`` uses ``mlx_lm.generate`` (legacy)."""
+    legacy_mlx_lm: bool = False
+    """Reserved: ``mx.compile`` on decode blocks needs array-only args (no runner context object yet)."""
+    mlx_compile_decode: bool = False
 
     # Scheduling / length limits (aligned with CUDA engine knobs)
     max_num_batched_tokens: int = 8192

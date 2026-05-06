@@ -28,14 +28,18 @@ class Scheduler:
         # prefill
         while self.waiting and len(scheduled_seqs) < self.max_num_seqs:
             seq = self.waiting[0]
-            num_tokens = max(seq.num_tokens - seq.num_cached_tokens, 1)
             remaining = self.max_num_batched_tokens - num_batched_tokens
-            if remaining == 0 or (not seq.block_table and not self.block_manager.can_allocate(seq)):    # no budget
-                break
-            if remaining < num_tokens and scheduled_seqs:    # only allow chunked prefill for the first seq
+            if remaining == 0:
                 break
             if not seq.block_table:
+                if not self.block_manager.can_allocate(seq):    # no budget
+                    break
                 self.block_manager.allocate(seq)
+            # ``allocate()`` may increase ``num_cached_tokens`` (prefix cache hit), so
+            # num_tokens must be computed after allocation.
+            num_tokens = max(seq.num_prompt_tokens - seq.num_cached_tokens, 1)
+            if remaining < num_tokens and scheduled_seqs:    # only allow chunked prefill for the first seq
+                break
             seq.num_scheduled_tokens = min(num_tokens, remaining)
             if seq.num_scheduled_tokens == num_tokens:
                 seq.status = SequenceStatus.RUNNING
@@ -71,8 +75,11 @@ class Scheduler:
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
         for seq, token_id in zip(seqs, token_ids):
             if is_prefill:
-                seq.num_cached_tokens = min(seq.num_cached_tokens + seq.num_scheduled_tokens, seq.num_tokens)
-                if seq.num_cached_tokens < seq.num_tokens or seq.num_completion_tokens > 0:    # chunked prefill or re prefill after preemption
+                seq.num_cached_tokens = min(
+                    seq.num_cached_tokens + seq.num_scheduled_tokens,
+                    seq.num_prompt_tokens,
+                )
+                if seq.num_cached_tokens < seq.num_prompt_tokens:  # chunked prompt prefill / resume
                     seq.num_scheduled_tokens = 0
                     continue
             seq.append_token(token_id)

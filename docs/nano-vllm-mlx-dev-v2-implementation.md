@@ -169,14 +169,13 @@ GitNexus 的符号视角仍清楚展示了公开入口关系：
 Phase 7 做了两类评估：
 
 1. `mx.compile()`：
-   - MLX 的 `mx.compile` 要求函数参数是 array 或常量树。
-   - 当前 `decode` 需要 `MLXRunnerContext`（Python dataclass，包含 seq 对象与列表元数据），直接 compile 会报错。
-   - 因此保留 `mlx_compile_decode` 配置位，但标记为 reserved；后续若要启用，需要先把 runner context 打包成纯 `mx.array` 参数。
-
+  - MLX 的 `mx.compile` 要求函数参数是 array 或常量树。
+  - 当前 `decode` 需要 `MLXRunnerContext`（Python dataclass，包含 seq 对象与列表元数据），直接 compile 会报错。
+  - 因此保留 `mlx_compile_decode` 配置位，但标记为 reserved；后续若要启用，需要先把 runner context 打包成纯 `mx.array` 参数。
 2. Batch gather：
-   - 新增 `build_decode_slot_matrix()` 与 `gather_kv_from_slot_matrix()`，支持将 decode 中逐序列 gather 改成批量 gather + batched SDPA。
-   - 增加 `decode_batch_gather` 和 `decode_batch_gather_min_work` 配置。
-   - 实测该优化收益不稳定，在多个负载下会变慢，因此默认值设为 `False`，作为实验开关保留。
+  - 新增 `build_decode_slot_matrix()` 与 `gather_kv_from_slot_matrix()`，支持将 decode 中逐序列 gather 改成批量 gather + batched SDPA。
+  - 增加 `decode_batch_gather` 和 `decode_batch_gather_min_work` 配置。
+  - 实测该优化收益不稳定，在多个负载下会变慢，因此默认值设为 `False`，作为实验开关保留。
 
 A/B benchmark 脚本：
 
@@ -209,6 +208,103 @@ OK: continuous batching completed
 
 直接调用 `MLXEngine(..., decode_batch_gather=False)` 双 prompt 生成也已通过，说明 Phase 1–6 主链路在不启用 Phase 7 实验优化时可正常运行。
 
+## benchmark 对齐（复刻 `bench.py`）
+
+为解决原 `scripts/bench_mlx.py` 使用 `chars/s`、与上游 CUDA `bench.py` 不可比的问题，新增：
+
+- `scripts/bench_mlx_nano_vllm_parity.py`
+
+该脚本按上游 `bench.py` 的定义复刻负载与统计口径（参数可调，默认与上游一致）：
+
+- `seed=0`
+- `num_seqs=256`（可通过参数缩减为 `32/64` 做快速验证）
+- prompt 长度随机 `100~1024`
+- `SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(100, 1024))`
+- 吞吐口径：`sum(max_tokens) / wall_time_seconds`
+- warmup：先跑一次短 `generate_cb`
+
+另外，为避免把 tokenizer 全量文本 decode 开销混入吞吐计时，在 `MLXEngine.generate_cb()` 中新增 `decode_text` 开关（默认 `True`），parity benchmark 使用 `decode_text=False` 与上游计时口径对齐。
+
+实测结果（Apple M5 / 24GB，`Qwen3-0.6B-mlx-v3`，`git=9f5634d`）：
+
+- `num_seqs=256`（上游同口径默认）：
+  - `total_planned_output_tokens=133,966`
+  - `time=2512.41s`
+  - `throughput=53.32 tok/s`
+- `num_seqs=32`（同配置缩小版）：
+  - `total_planned_output_tokens=17,776`
+  - `time=270.21s`
+  - `throughput=65.79 tok/s`
+- `num_seqs=64`（同配置缩小版）：
+  - `total_planned_output_tokens=38,443`
+  - `time=580.04s`
+  - `throughput=66.28 tok/s`
+
+结果文件：
+
+- `.bench_mlx_parity_256.json`
+- `.bench_mlx_parity_32.json`
+- `.bench_mlx_parity_64.json`
+
+对比说明：上游 README 的 CUDA 结果（RTX 4070 Laptop）是 `1434.13 tok/s`，MLX parity 的价值在于**口径对齐**而不是跨后端绝对数值打平；后续应在同一口径下继续做 MLX 内部 A/B（如 decode 路线、batch gather 开关、kv block 参数）。
+
+## 服务指标 benchmark（TTFT / TPOT / 并发 / baseline）
+
+为补齐 `bench.py` 不覆盖的线上服务指标，新增：
+
+- `scripts/bench_mlx_serving.py`
+
+该脚本支持：
+
+- 指标：`latency`、`throughput (tok/s)`、`TTFT`、`TPOT`
+- 并发扩展：`--concurrency 1,2,4,...`
+- 对比 baseline：`--compare-legacy`（`legacy_mlx_lm=True`）
+- warmup 与多次统计：`--warmup-runs` + `--runs`
+
+正式样例（`runs=10`、`warmup=2`、`prompt_len=128`、`max_tokens=64`）结果：
+
+- CB（continuous batching）：
+  - `c=1`: `latency_mean=1550.80ms (p50=1524.51, p95=1714.94)`, `TTFT_mean=92.17ms`, `TPOT_mean=23.15ms`, `throughput=41.42 tok/s`
+  - `c=2`: `latency_mean=2294.96ms (p50=2296.73, p95=2306.07)`, `TTFT_mean=101.26ms`, `TPOT_mean=34.82ms`, `throughput=55.78 tok/s`
+  - `c=4`: `latency_mean=3600.35ms (p50=3597.58, p95=3625.43)`, `TTFT_mean=166.46ms`, `TPOT_mean=54.51ms`, `throughput=71.11 tok/s`
+- legacy baseline（`mlx_lm.generate`）：
+  - `c=1`: `latency_mean=794.97ms`, `throughput=80.64 tok/s`
+  - `c=2`: `latency_mean=1568.63ms`, `throughput=81.61 tok/s`
+  - `c=4`: `latency_mean=3163.22ms`, `throughput=80.94 tok/s`
+- 对比（CB vs legacy）：
+  - `c=1`: latency `-95.08%`, throughput `-48.64%`
+  - `c=2`: latency `-46.30%`, throughput `-31.66%`
+  - `c=4`: latency `-13.82%`, throughput `-12.15%`
+
+参数扫描（CB only, `concurrency=2`, `runs=10`, `warmup=2`）：
+
+- `max_tokens` 扫描（`prompt_len=128`）：
+  - `16`: `latency_mean=620.08ms`, `TTFT_mean=95.23ms`, `TPOT_mean=34.99ms`, `throughput=51.62 tok/s`
+  - `64`: `latency_mean=2347.54ms`, `TTFT_mean=98.03ms`, `TPOT_mean=35.71ms`, `throughput=54.55 tok/s`
+  - `128`: `latency_mean=4673.92ms`, `TTFT_mean=99.66ms`, `TPOT_mean=36.02ms`, `throughput=54.77 tok/s`
+  - `256`: `latency_mean=9532.80ms`, `TTFT_mean=100.35ms`, `TPOT_mean=36.99ms`, `throughput=53.71 tok/s`
+- `prompt_len` 扫描（`max_tokens=64`）：
+  - `128`: `latency_mean=2412.00ms`, `TTFT_mean=102.91ms`, `TPOT_mean=36.65ms`, `throughput=53.07 tok/s`
+  - `512`: `latency_mean=2822.69ms`, `TTFT_mean=157.65ms`, `TPOT_mean=42.30ms`, `throughput=45.36 tok/s`
+  - `1024`: `latency_mean=3345.32ms`, `TTFT_mean=169.63ms`, `TPOT_mean=50.41ms`, `throughput=38.27 tok/s`
+
+结果文件：
+
+- `.bench_mlx_serving_c124_runs10.json`
+- `.bench_mlx_serving_c2_t16_runs10.json`
+- `.bench_mlx_serving_c2_t64_runs10.json`
+- `.bench_mlx_serving_c2_t128_runs10.json`
+- `.bench_mlx_serving_c2_t256_runs10.json`
+- `.bench_mlx_serving_c2_p128_runs10.json`
+- `.bench_mlx_serving_c2_p512_runs10.json`
+- `.bench_mlx_serving_c2_p1024_runs10.json`
+
+说明：
+
+- 这组已经使用 `runs=10` + warmup，具备稳定参考价值；后续可继续加 `c=8`、`prompt_len=2048` 和更大模型以观察拐点。
+- legacy 路径当前不提供 step 级事件，因此 baseline 只统计了 end-to-end latency / throughput，TTFT/TPOT 仅对 CB 路径精确统计。
+- 当前结果显示：在该模型/配置下，CB 路径尚未超过 legacy 路径；并发升高时差距缩小（`c=1` -> `c=4`），但仍未反超，后续优化重点应放在 decode 路径和 gather/scatter 成本。
+
 ## 当前能力边界
 
 当前 `nano-vllm-mlx` 已经从“包装 `mlx_lm.generate()`”推进到“自有 continuous batching 推理栈”，但仍不等价 CUDA 高性能路径：
@@ -217,7 +313,7 @@ OK: continuous batching completed
 - 没有 CUDA Graph 等同级别 capture。
 - 没有 Tensor Parallel / NCCL；MLX distributed 仍是后续可选方向。
 - Paged attention 目前基于 MLX 原生 gather / scatter，性能上仍需要进一步优化。
-- Token 级 benchmark（TTFT、decode tokens/s、P95 token latency）仍可继续补齐。
+- 已补齐 `bench.py` 同口径吞吐 benchmark；TTFT、P95 token latency、prefill/decode 分拆指标仍可继续补齐。
 
 ## 项目价值
 
@@ -231,8 +327,10 @@ OK: continuous batching completed
 
 ## 简历 Bullet Points
 
-- 在 `nano-vllm` 基础上实现 Apple Silicon / MLX 独立推理后端，新增 `Sequence`、`BlockManager`、`Scheduler`、`ModelRunner` 与 `MLXEngine.generate_cb()`，将原先逐 prompt 的 `mlx_lm.generate()` 包装升级为支持 continuous batching 的自有推理链路。
-- 自研 Qwen3 MLX 模型结构并对齐 `mlx_lm` 权重布局，拆分 QKV projection、RoPE、SDPA 与 output projection，使 paged KV gather / scatter 能在 attention 外部注入，支持后续替换和优化。
-- 在 MLX 上实现 paged KV cache 与 block-table attention：通过 KV slot scatter/gather、prefix cache hash、chunked prefill 与 decode 调度，复刻 CUDA 路径中核心推理引擎思想，并完成本地 Qwen3-0.6B 端到端验证。
-- 建立可复现验证与性能评估闭环，包含模型转换、smoke test、continuous batching 验证和 Phase7 A/B benchmark；对 batch gather / `mx.compile` 优化做实测评估，并将收益不稳定的实验优化默认关闭以保证主链路稳定。
+- 在 `nano-vllm` 基础上将 vLLM 推理引擎核心机制功能级复刻到 Apple Silicon / MLX：实现 `Sequence`、paged KV `BlockManager`、prefix cache、continuous batching scheduler、chunked prefill 与 decode 轮转调度，将原先逐 prompt 的 `mlx_lm.generate()` 包装升级为自有批量推理链路。
+- 在 MLX 上实现 paged attention 的核心执行路径：基于 block table / slot mapping 管理物理 KV cache，通过 KV scatter/gather 重建每个序列的历史 K/V，并接入 `mx.fast.scaled_dot_product_attention` 完成 prefill 与 decode attention，体现对 vLLM paged KV / block-table attention 机制的深入理解。
+- 自研 Qwen3 MLX 模型结构并对齐 `mlx_lm` 权重布局，拆分 QKV projection、Q/K RMSNorm、RoPE、SDPA 与 output projection，使 attention 层可接收外部 gather 的 K/V，为 paged KV cache 与后续 kernel / gather 优化提供可替换执行边界。
+- 建立 Apple Silicon 端到端验证与性能评估闭环，覆盖 HF -> MLX 模型转换、smoke test、continuous batching 多 prompt 验证、Phase7 batch-gather / `mx.compile` A/B benchmark；在本地 Qwen3-0.6B 上验证主链路可运行，并将收益不稳定的实验优化默认关闭以保证稳定性。
+
+> 简历表述建议：可以说“在 MLX 上功能级复刻 / 迁移 vLLM 核心推理机制（continuous batching、paged KV cache、paged attention）”，不建议写成“性能等价移植 FlashAttention / Triton kernel”。当前实现复刻的是调度、KV 管理和 block-table attention 思想，底层 attention kernel 仍使用 MLX 原生 SDPA + 手写 gather/scatter。
 

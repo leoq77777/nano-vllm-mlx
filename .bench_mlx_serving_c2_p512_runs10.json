@@ -1,0 +1,110 @@
+{
+  "cb": {
+    "2": {
+      "runs": [
+        {
+          "latency_ms": 2796.864709001966,
+          "throughput_tps": 45.765531521070805,
+          "tpot_ms_mean": 41.90978704718873,
+          "ttft_ms_mean": 156.5481250290759
+        },
+        {
+          "latency_ms": 2793.8343749847263,
+          "throughput_tps": 45.815171130428865,
+          "tpot_ms_mean": 41.86710846030139,
+          "ttft_ms_mean": 156.20654198573902
+        },
+        {
+          "latency_ms": 2792.3687919974327,
+          "throughput_tps": 45.83921735797629,
+          "tpot_ms_mean": 41.815948412044065,
+          "ttft_ms_mean": 157.96404203865677
+        },
+        {
+          "latency_ms": 2784.113999980036,
+          "throughput_tps": 45.975128892321884,
+          "tpot_ms_mean": 41.68901322243203,
+          "ttft_ms_mean": 157.70616696681827
+        },
+        {
+          "latency_ms": 2778.9345830096863,
+          "throughput_tps": 46.06081797771986,
+          "tpot_ms_mean": 41.59416666712671,
+          "ttft_ms_mean": 158.50208298070356
+        },
+        {
+          "latency_ms": 2807.8719999757595,
+          "throughput_tps": 45.58612358437458,
+          "tpot_ms_mean": 42.090350523635394,
+          "ttft_ms_mean": 156.17991698672995
+        },
+        {
+          "latency_ms": 2867.356083006598,
+          "throughput_tps": 44.640427032621695,
+          "tpot_ms_mean": 43.01014285726798,
+          "ttft_ms_mean": 157.71708299871534
+        },
+        {
+          "latency_ms": 2832.8781250165775,
+          "throughput_tps": 45.18372988575037,
+          "tpot_ms_mean": 42.43856084085853,
+          "ttft_ms_mean": 159.2487920424901
+        },
+        {
+          "latency_ms": 2819.1402920056134,
+          "throughput_tps": 45.403912803834714,
+          "tpot_ms_mean": 42.25483598438875,
+          "ttft_ms_mean": 157.08562498912215
+        },
+        {
+          "latency_ms": 2953.5542500088923,
+          "throughput_tps": 43.33761602639079,
+          "tpot_ms_mean": 44.35253174631812,
+          "ttft_ms_mean": 159.3447499908507
+        }
+      ],
+      "summary": {
+        "latency_ms": {
+          "mean": 2822.691720898729,
+          "p50": 2802.3683544888627,
+          "p95": 2914.76507485786,
+          "p99": 2945.796414978686
+        },
+        "throughput_tps": {
+          "mean": 45.36076762124898,
+          "p50": 45.675827552722694,
+          "p95": 46.02225788929077
+        },
+        "tpot_ms": {
+          "mean": 42.30224457615617,
+          "p50": 42.00006878541206,
+          "p95": 43.74845674624555,
+          "p99": 44.231716746303604
+        },
+        "ttft_ms": {
+          "mean": 157.65031260089017,
+          "p50": 157.7116249827668,
+          "p95": 159.30156891408842,
+          "p99": 159.33611377549823
+        }
+      }
+    }
+  },
+  "meta": {
+    "bench": "nano-vllm-mlx serving benchmark",
+    "chip": "Apple M5",
+    "compare_legacy": false,
+    "concurrency": [
+      2
+    ],
+    "git_head": "9f5634d",
+    "max_tokens": 64,
+    "model": "/Users/leo/huggingface/Qwen3-0.6B-mlx-v3",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "prompt_len_tokens": 512,
+    "python": "3.11.15",
+    "runs": 10,
+    "temperature": 0.6,
+    "warmup_runs": 2
+  }
+}

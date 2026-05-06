@@ -101,7 +101,10 @@ class BlockManager:
         seq.block_table.clear()
 
     def can_append(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
+        # Match CUDA ``engine/block_manager.py``: at block boundaries we must allocate
+        # one additional physical KV block before writing the next token.
+        need_new_block = 1 if len(seq) % self.block_size == 1 else 0
+        return len(self.free_block_ids) >= need_new_block
 
     def may_append(self, seq: Sequence):
         block_table = seq.block_table

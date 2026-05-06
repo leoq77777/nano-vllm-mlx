@@ -128,6 +128,7 @@ class MLXEngine:
         prompts: list[str] | list[list[int]],
         sampling_params: SamplingParams | list[SamplingParams],
         use_tqdm: bool = True,
+        decode_text: bool = True,
     ) -> list[dict]:
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
@@ -152,10 +153,12 @@ class MLXEngine:
                 pbar.update(1)
         pbar.close()
         ordered = [outputs[sid] for sid in sorted(outputs.keys())]
-        return [
-            {"text": self.tokenizer.decode(toks), "token_ids": toks}
-            for toks in ordered
-        ]
+        if decode_text:
+            return [
+                {"text": self.tokenizer.decode(toks), "token_ids": toks}
+                for toks in ordered
+            ]
+        return [{"text": "", "token_ids": toks} for toks in ordered]
 
     def generate_one(self, prompt: str, max_tokens: int, temperature: float) -> str:
         _ = temperature

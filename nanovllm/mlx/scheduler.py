@@ -30,14 +30,19 @@ class MLXScheduler:
 
         while self.waiting and len(scheduled_seqs) < self.max_num_seqs:
             seq = self.waiting[0]
-            num_tokens = max(seq.num_tokens - seq.num_cached_tokens, 1)
             remaining = self.max_num_batched_tokens - num_batched_tokens
-            if remaining == 0 or (not seq.block_table and not self.block_manager.can_allocate(seq)):
-                break
-            if remaining < num_tokens and scheduled_seqs:
+            if remaining == 0:
                 break
             if not seq.block_table:
+                if not self.block_manager.can_allocate(seq):
+                    break
                 self.block_manager.allocate(seq)
+            # NOTE: ``allocate()`` may increase ``num_cached_tokens`` via prefix-cache hits.
+            # Recompute after allocation; otherwise ``num_scheduled_tokens`` can use stale
+            # values and exceed the prompt tail to be prefetched.
+            num_tokens = max(seq.num_prompt_tokens - seq.num_cached_tokens, 1)
+            if remaining < num_tokens and scheduled_seqs:
+                break
             seq.num_scheduled_tokens = min(num_tokens, remaining)
             if seq.num_scheduled_tokens == num_tokens:
                 seq.status = SequenceStatus.RUNNING
@@ -72,8 +77,11 @@ class MLXScheduler:
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool) -> None:
         for seq, token_id in zip(seqs, token_ids):
             if is_prefill:
-                seq.num_cached_tokens = min(seq.num_cached_tokens + seq.num_scheduled_tokens, seq.num_tokens)
-                if seq.num_cached_tokens < seq.num_tokens or seq.num_completion_tokens > 0:
+                seq.num_cached_tokens = min(
+                    seq.num_cached_tokens + seq.num_scheduled_tokens,
+                    seq.num_prompt_tokens,
+                )
+                if seq.num_cached_tokens < seq.num_prompt_tokens:
                     seq.num_scheduled_tokens = 0
                     continue
             seq.append_token(token_id)
